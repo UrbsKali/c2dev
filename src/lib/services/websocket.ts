@@ -28,6 +28,7 @@ export const simulationMode = {
 
 const REALTIME_LOG_PREFIX = '[Realtime]';
 const SIM_LOG_PREFIX = '[Simulator]';
+const CHANNEL_NAME = 'c2dev-simulation-sync';
 
 const logRealtime = (...args: unknown[]): void => {
   console.info(REALTIME_LOG_PREFIX, ...args);
@@ -51,7 +52,7 @@ const listeners = new Set<(event: TelemetryEvent) => void>();
 
 let unsubscribeRealtime: (() => void) | null = null;
 
-const SIM_ROBOT_ID = 'sim-ghost';
+export const SIM_ROBOT_ID = 'sim-ghost';
 const SIM_DEFAULT_WAYPOINTS: Position[] = [
   { lat: 48.8566, lon: 2.3522, alt: 120 },
   { lat: 48.8595, lon: 2.3478, alt: 120 },
@@ -68,6 +69,126 @@ let simulationTimer: number | null = null;
 let simulationActive = false;
 let simulationForced = false;
 let simulationStatus = 'Simulated patrol route';
+let simulationSeq = Date.now();
+
+const broadcastChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window ? new BroadcastChannel(CHANNEL_NAME) : null;
+const storageKey = 'c2dev-sim-sync';
+const hasStorage = typeof window !== 'undefined' && typeof window.addEventListener === 'function' && 'localStorage' in window;
+
+interface SimulationSyncMessage {
+  source: string;
+  type: 'state' | 'command';
+  payload: unknown;
+  timestamp: number;
+}
+
+const instanceId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `sim-${Math.random().toString(36).slice(2)}`;
+let suppressIncoming = false;
+
+function withSuppressed<T>(fn: () => T): T {
+  suppressIncoming = true;
+  try {
+    return fn();
+  } finally {
+    suppressIncoming = false;
+  }
+}
+
+function broadcastSync(type: SimulationSyncMessage['type'], payload: unknown): void {
+  if (suppressIncoming) return;
+  const message: SimulationSyncMessage = {
+    source: instanceId,
+    type,
+    payload,
+    timestamp: Date.now()
+  };
+
+  if (broadcastChannel) {
+    broadcastChannel.postMessage(message);
+    return;
+  }
+
+  if (hasStorage) {
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(message));
+      window.localStorage.removeItem(storageKey);
+    } catch (error) {
+      console.warn('[Simulator] Failed to broadcast via storage', error);
+    }
+  }
+}
+
+function handleIncomingSync(message: SimulationSyncMessage): void {
+  if (!message || message.source === instanceId) return;
+  if (message.type === 'state') {
+    const incoming = message.payload as {
+      current: Position;
+      waypoints: Position[];
+      index: number;
+      status: string;
+      seq: number;
+      active: boolean;
+      telemetry: TelemetryMessage;
+    };
+    if (!incoming) return;
+    withSuppressed(() => {
+      simulationCurrent = incoming.current ? { ...incoming.current } : { ...SIM_DEFAULT_WAYPOINTS[0] };
+      simulationWaypoints = Array.isArray(incoming.waypoints) && incoming.waypoints.length > 0 ? incoming.waypoints.map((point) => ({ ...point })) : [...SIM_DEFAULT_WAYPOINTS];
+      simulationIndex = Number.isFinite(incoming.index) ? Math.max(Math.min(incoming.index, simulationWaypoints.length - 1), 0) : 0;
+      simulationStatus = typeof incoming.status === 'string' ? incoming.status : simulationStatus;
+      simulationSeq = Number.isFinite(incoming.seq) ? incoming.seq : simulationSeq;
+      simulationActive = Boolean(incoming.active);
+      if (incoming.active) {
+        stateStore.set('connected');
+      }
+      if (incoming.telemetry) {
+        applyTelemetry({ ...incoming.telemetry, robotId: SIM_ROBOT_ID });
+        upsertRobot({
+          id: SIM_ROBOT_ID,
+          controllable: true,
+          position: incoming.telemetry.position ? { ...incoming.telemetry.position } : { ...simulationCurrent },
+          heading: incoming.telemetry.heading,
+          speed: incoming.telemetry.speed,
+          status: incoming.telemetry.status ?? simulationStatus,
+          lastSeen: incoming.telemetry.lastSeen,
+          type: incoming.telemetry.type ?? 'UAV',
+          extra: { simulated: true }
+        });
+      }
+      updateSimulationModeSnapshot();
+    });
+    logSimulator('Applied simulation state from peer', {
+      active: simulationActive,
+      waypointCount: simulationWaypoints.length,
+      index: simulationIndex
+    });
+  } else if (message.type === 'command') {
+    const incoming = message.payload as Command;
+    if (!incoming || !incoming.robotId) return;
+    withSuppressed(() => {
+      if (incoming.robotId === SIM_ROBOT_ID) {
+        handleSimulationCommand(incoming);
+      }
+    });
+  }
+}
+
+if (typeof window !== 'undefined') {
+  if (broadcastChannel) {
+    broadcastChannel.addEventListener('message', (event: MessageEvent<SimulationSyncMessage>) => handleIncomingSync(event.data));
+    window.addEventListener('beforeunload', () => broadcastChannel.close(), { once: true });
+  } else if (hasStorage) {
+    window.addEventListener('storage', (event: StorageEvent) => {
+      if (event.key !== storageKey || !event.newValue) return;
+      try {
+        const data = JSON.parse(event.newValue) as SimulationSyncMessage;
+        handleIncomingSync(data);
+      } catch (error) {
+        console.warn('[Simulator] Failed to parse incoming storage event', error);
+      }
+    });
+  }
+}
 
 function updateSimulationModeSnapshot(): void {
   simulationModeStore.set({ active: simulationActive, forced: simulationForced });
@@ -176,6 +297,7 @@ export async function sendCommand(command: Command): Promise<void> {
       commandId: command.id
     });
     handleSimulationCommand(command);
+    broadcastSync('command', command);
     return;
   }
 
@@ -368,7 +490,7 @@ function stepSimulation(): void {
   const telemetry: TelemetryMessage = {
     msgType: 'telemetry',
     robotId: SIM_ROBOT_ID,
-    seq: Date.now(),
+    seq: simulationSeq++,
     position: { ...simulationCurrent },
     heading,
     speed: speedMetersPerSecond,
@@ -380,6 +502,16 @@ function stepSimulation(): void {
 
   applyTelemetry(telemetry);
   debugSimulator('Simulation tick', { position: simulationCurrent, heading, speed: speedMetersPerSecond });
+
+  broadcastSync('state', {
+    current: { ...simulationCurrent },
+    waypoints: simulationWaypoints.map((point) => ({ ...point })),
+    index: simulationIndex,
+    status: simulationStatus,
+    seq: simulationSeq,
+    active: simulationActive,
+    telemetry
+  });
 
   const syntheticEvent = {
     events: [`sim.${SIM_ROBOT_ID}.telemetry`],

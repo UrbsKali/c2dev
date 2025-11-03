@@ -26,6 +26,7 @@ let leafletConfigured = false;
 
 export function configureLeaflet(L: typeof import('leaflet')): void {
   if (leafletConfigured) return;
+  (L.Icon.Default as unknown as { imagePath?: string }).imagePath = '';
   L.Icon.Default.mergeOptions({
     iconRetinaUrl,
     iconUrl,

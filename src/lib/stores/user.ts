@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { appwriteAuth } from '$services/appwrite';
 
-export type UserRole = 'operator' | 'commander' | 'admin';
+export type UserRole = 'operator' | 'commander' | 'mission_commander' | 'admin';
 
 export interface UserProfile {
   id: string;

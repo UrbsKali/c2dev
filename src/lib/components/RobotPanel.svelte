@@ -2,6 +2,7 @@
   import { derived } from 'svelte/store';
   import RobotMarker from '$components/RobotMarker.svelte';
   import { robots, selectedRobotId } from '$stores/robots';
+  import { sharedSelectedRobotId } from '$stores/mapInteractions';
   import type { Robot } from '$types';
 
   let search = '';
@@ -19,6 +20,11 @@
 
   function handleSelect(robot: Robot): void {
     selectedRobotId.set(robot.id);
+    sharedSelectedRobotId.set(robot.id);
+  }
+
+  $: if ($sharedSelectedRobotId !== $selectedRobotId) {
+    selectedRobotId.set($sharedSelectedRobotId);
   }
 </script>
 

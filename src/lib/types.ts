@@ -30,6 +30,8 @@ export interface Mission {
   assignedOperators: string[];
   assignedRobots: string[];
   status: 'draft' | 'active' | 'completed' | 'aborted';
+  ownerId?: string;
+  createdAt?: string;
 }
 
 export interface Command {

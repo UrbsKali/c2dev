@@ -12,9 +12,11 @@
   import type { Robot } from '$types';
   import { robots, selectedRobotId } from '$stores/robots';
   import { socketState } from '$services/websocket';
+  import { sharedSelectedRobotId } from '$stores/mapInteractions';
 
   const dispatch = createEventDispatcher<{
     waypointCreated: { robotId: string | null; coordinates: [number, number][] };
+    robotSelected: { robotId: string | null };
   }>();
 
   let container: HTMLDivElement | null = null;
@@ -115,8 +117,11 @@
         if (!newMarker) return;
         markerCache.set(robot.id, newMarker);
         newMarker.addTo(layer);
+        bindMarkerSelection(newMarker, robot.id);
         marker = newMarker;
         createdMarker = true;
+      } else {
+        bindMarkerSelection(marker, robot.id);
       }
       marker.setLatLng([robot.position.lat, robot.position.lon]);
       marker.setPopupContent(
@@ -161,6 +166,15 @@
     if (!robotId) return;
     const marker = markerCache.get(robotId);
     marker?.openPopup();
+  }
+
+  function bindMarkerSelection(marker: LeafletMarker, robotId: string): void {
+    marker.off('click');
+    marker.on('click', () => {
+      sharedSelectedRobotId.set(robotId);
+      selectedRobotId.set(robotId);
+      dispatch('robotSelected', { robotId });
+    });
   }
 
   onMount(async () => {
@@ -230,6 +244,9 @@
     unsubscribeRobots = robots.subscribe((robotList) => syncMarkers(robotList));
     unsubscribeSelection = selectedRobotId.subscribe((robotId) => {
       selectedRobotIdValue = robotId;
+      if (robotId) {
+        sharedSelectedRobotId.set(robotId);
+      }
       highlightRobot(robotId);
     });
   });
@@ -263,8 +280,8 @@
 
 <style>
   :global(.robot-symbol svg) {
-    /* width: 48px;
-    height: 48px; */
+    width: 48px;
+    height: 48px;
   }
 </style>
 
