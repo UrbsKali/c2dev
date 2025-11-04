@@ -60,24 +60,52 @@ function startLayoutObserver(set: (value: LayoutState) => void): () => void {
     vv.addEventListener('scroll', applyViewport, { signal: abortController.signal });
   };
 
-  const hookScreenDetails = async (): Promise<void> => {
+  const hookScreenDetails = (): void => {
     if (!('getScreenDetails' in window)) {
       applyViewport();
       return;
     }
-    try {
-      screenDetails = await (window as unknown as { getScreenDetails: () => Promise<ScreenDetails> }).getScreenDetails();
-      screenDetails.addEventListener('screenschange', applyViewport, { signal: abortController.signal });
-      screenDetails.addEventListener('currentscreenchange', applyViewport, { signal: abortController.signal });
-    } catch (error) {
-      console.warn('[Layout] Failed to acquire screen details', error);
-    } finally {
+
+    const requestScreenDetails = async (): Promise<void> => {
+      try {
+        screenDetails = await (window as unknown as { getScreenDetails: () => Promise<ScreenDetails> }).getScreenDetails();
+        screenDetails.addEventListener('screenschange', applyViewport, { signal: abortController.signal });
+        screenDetails.addEventListener('currentscreenchange', applyViewport, { signal: abortController.signal });
+      } catch (error) {
+        console.warn('[Layout] Failed to acquire screen details', error);
+      } finally {
+        applyViewport();
+      }
+    };
+
+    const nav = typeof navigator !== 'undefined'
+      ? (navigator as Navigator & { userActivation?: { isActive: boolean } })
+      : null;
+
+    if (nav?.userActivation && !nav.userActivation.isActive) {
+      const onFirstInteraction = (): void => {
+        window.removeEventListener('pointerdown', onFirstInteraction);
+        window.removeEventListener('keydown', onFirstInteraction);
+        void requestScreenDetails();
+      };
+
+      window.addEventListener('pointerdown', onFirstInteraction, {
+        once: true,
+        signal: abortController.signal
+      });
+      window.addEventListener('keydown', onFirstInteraction, {
+        once: true,
+        signal: abortController.signal
+      });
       applyViewport();
+      return;
     }
+
+    void requestScreenDetails();
   };
 
   hookVisualViewport();
-  void hookScreenDetails();
+  hookScreenDetails();
   applyViewport();
 
   return () => abortController.abort();

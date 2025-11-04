@@ -12,7 +12,7 @@
     errorMessage.set('');
     isSubmitting.set(true);
     try {
-  await login(get(email), get(password));
+    await login(get(email), get(password));
     } catch (error) {
       errorMessage.set(error instanceof Error ? error.message : 'Unable to sign in.');
     } finally {
@@ -25,7 +25,7 @@
 <section class="mx-auto flex w-full max-w-sm flex-col gap-6 rounded-lg border border-slate-700 bg-slate-950/90 p-6 text-slate-100">
   <header class="space-y-1 text-center">
     <h1 class="text-2xl font-semibold">C2 Login</h1>
-    <p class="text-sm text-slate-400">Authenticate with your Appwrite credentials to access the command deck.</p>
+  <p class="text-sm text-slate-400">Authenticate with your Supabase credentials to access the command deck.</p>
   </header>
 
   <form class="flex flex-col gap-4" on:submit|preventDefault={handleSubmit}>

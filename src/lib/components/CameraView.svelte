@@ -46,6 +46,6 @@
   </div>
 
   <p class="text-xs text-slate-500">
-    Implementation note: integrate WebRTC signaling via Appwrite Functions and ICE configuration once available.
+    Implementation note: integrate WebRTC signaling via Supabase Edge Functions and coordinated ICE configuration once available.
   </p>
 </section>

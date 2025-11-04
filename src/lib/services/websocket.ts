@@ -1,14 +1,12 @@
 import { writable } from 'svelte/store';
-import { ID, type RealtimeResponseEvent } from 'appwrite';
+import type { RealtimeChannel, RealtimePostgresInsertPayload } from '@supabase/supabase-js';
 import { applyTelemetry, upsertRobot } from '$stores/robots';
 import type { Command, TelemetryMessage, Position } from '$types';
 import {
-  appwriteClient,
-  appwriteDatabases,
-  APPWRITE_DATABASE_ID,
-  COMMANDS_COLLECTION,
-  TELEMETRY_COLLECTION
-} from '$services/appwrite';
+  supabaseClient,
+  COMMANDS_TABLE,
+  TELEMETRY_TABLE
+} from '$services/supabase';
 
 export type SocketState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -46,11 +44,24 @@ const debugSimulator = (...args: unknown[]): void => {
   console.debug(SIM_LOG_PREFIX, ...args);
 };
 
-type TelemetryEvent = RealtimeResponseEvent<Record<string, unknown>>;
+type TelemetryRow = {
+  id?: number;
+  robot_id?: string | null;
+  mission_id?: string | null;
+  position?: unknown;
+  heading?: number | null;
+  speed?: number | null;
+  status?: string | null;
+  timestamp?: string | null;
+  server_received?: string | null;
+  type?: string | null;
+};
 
-const listeners = new Set<(event: TelemetryEvent) => void>();
+type TelemetryListener = (message: TelemetryMessage) => void;
 
-let unsubscribeRealtime: (() => void) | null = null;
+const listeners = new Set<TelemetryListener>();
+
+let telemetryChannel: RealtimeChannel | null = null;
 
 export const SIM_ROBOT_ID = 'sim-ghost';
 const SIM_DEFAULT_WAYPOINTS: Position[] = [
@@ -194,38 +205,99 @@ function updateSimulationModeSnapshot(): void {
   simulationModeStore.set({ active: simulationActive, forced: simulationForced });
 }
 
-export function addMessageListener(listener: (event: TelemetryEvent) => void): () => void {
+export function addMessageListener(listener: TelemetryListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-function notifyListeners(event: TelemetryEvent): void {
-  listeners.forEach((listener) => listener(event));
+function notifyListeners(message: TelemetryMessage): void {
+  listeners.forEach((listener) => listener(message));
 }
 
-function mapTelemetry(payload: Record<string, unknown>): TelemetryMessage | null {
-  const robotId = typeof payload.robotId === 'string' ? payload.robotId : undefined;
+function clearRealtimeChannel(): void {
+  if (telemetryChannel) {
+    supabaseClient.removeChannel(telemetryChannel);
+    telemetryChannel = null;
+  }
+}
+
+function parsePosition(value: unknown): Position | undefined {
+  if (!value) return undefined;
+
+  if (typeof value === 'string') {
+    const wktMatch = value.match(/POINT\s*\(([-0-9.]+) ([-0-9.]+)(?: ([-0-9.]+))?\)/i);
+    if (wktMatch) {
+      const lon = Number(wktMatch[1]);
+      const lat = Number(wktMatch[2]);
+      const alt = wktMatch[3] ? Number(wktMatch[3]) : undefined;
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        return {
+          lat,
+          lon,
+          alt: Number.isFinite(alt ?? NaN) ? (alt as number) : undefined
+        };
+      }
+    }
+    try {
+      const parsed = JSON.parse(value);
+      return parsePosition(parsed);
+    } catch (error) {
+      console.warn('[Realtime] Failed to parse geometry string', error);
+    }
+    return undefined;
+  }
+
+  if (typeof value === 'object') {
+    const maybeGeo = value as { coordinates?: number[]; lat?: number; lon?: number; lng?: number; latitude?: number; longitude?: number; altitude?: number; alt?: number };
+    if (Array.isArray(maybeGeo.coordinates) && maybeGeo.coordinates.length >= 2) {
+      const [lon, lat, alt] = maybeGeo.coordinates;
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        return {
+          lat,
+          lon,
+          alt: Number.isFinite(alt ?? NaN) ? (alt as number) : undefined
+        };
+      }
+    }
+    const lat = Number.isFinite(maybeGeo.lat) ? (maybeGeo.lat as number) : Number.isFinite(maybeGeo.latitude) ? (maybeGeo.latitude as number) : undefined;
+    const lon = Number.isFinite(maybeGeo.lon) ? (maybeGeo.lon as number) : Number.isFinite(maybeGeo.lng) ? (maybeGeo.lng as number) : Number.isFinite(maybeGeo.longitude) ? (maybeGeo.longitude as number) : undefined;
+    const alt = Number.isFinite(maybeGeo.alt) ? (maybeGeo.alt as number) : Number.isFinite(maybeGeo.altitude) ? (maybeGeo.altitude as number) : undefined;
+    if (lat !== undefined && lon !== undefined) {
+      return {
+        lat,
+        lon,
+        alt
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function mapTelemetry(row: TelemetryRow): TelemetryMessage | null {
+  const robotId = typeof row.robot_id === 'string' ? row.robot_id : undefined;
   if (!robotId) return null;
-
-  const positionRaw = payload.position as Record<string, unknown> | undefined;
-  const lat = typeof payload.lat === 'number' ? payload.lat : Number(positionRaw?.lat ?? positionRaw?.latitude);
-  const lon = typeof payload.lon === 'number' ? payload.lon : Number(positionRaw?.lon ?? positionRaw?.longitude);
-  const alt = typeof payload.alt === 'number' ? payload.alt : Number(positionRaw?.alt ?? positionRaw?.altitude ?? NaN);
-
-  const position = Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon, alt: Number.isFinite(alt) ? alt : undefined } : undefined;
 
   const telemetry: TelemetryMessage = {
     msgType: 'telemetry',
     robotId,
-    seq: Number(payload.seq ?? payload.sequence ?? Date.now()),
-    position,
-    heading: typeof payload.heading === 'number' ? payload.heading : undefined,
-    speed: typeof payload.speed === 'number' ? payload.speed : undefined,
-    type: (payload.type as TelemetryMessage['type']) ?? undefined,
-    status: typeof payload.status === 'string' ? payload.status : undefined,
-    lastSeen: typeof payload.lastSeen === 'string' ? payload.lastSeen : undefined,
-    serverReceived: typeof payload.serverReceived === 'string' ? payload.serverReceived : new Date().toISOString()
+    seq: Number.isFinite(row.id) ? Number(row.id) : Date.now(),
+    position: parsePosition(row.position),
+    heading: typeof row.heading === 'number' ? row.heading : undefined,
+    speed: typeof row.speed === 'number' ? row.speed : undefined,
+    status: typeof row.status === 'string' ? row.status : undefined,
+    lastSeen: typeof row.timestamp === 'string' ? row.timestamp : undefined,
+    serverReceived:
+      typeof row.server_received === 'string'
+        ? row.server_received
+        : typeof row.timestamp === 'string'
+          ? row.timestamp
+          : new Date().toISOString()
   };
+
+  if (typeof row.type === 'string') {
+    telemetry.type = row.type as TelemetryMessage['type'];
+  }
 
   return telemetry;
 }
@@ -237,53 +309,63 @@ export function connectRealtime(): void {
     startSimulation({ forced: true });
     return;
   }
-  if (unsubscribeRealtime) {
-    logRealtime('Already subscribed to Appwrite Realtime; skipping duplicate connect');
+  if (telemetryChannel) {
+    logRealtime('Already subscribed to Supabase Realtime; skipping duplicate connect');
     return;
   }
 
   stateStore.set('connecting');
-  logRealtime('Connecting to Appwrite Realtime…');
+  logRealtime('Connecting to Supabase Realtime…');
 
-  try {
-    unsubscribeRealtime = appwriteClient.subscribe(
-      [`databases.${APPWRITE_DATABASE_ID}.collections.${TELEMETRY_COLLECTION}.documents`],
-      (event) => {
+  telemetryChannel = supabaseClient
+    .channel('c2dev-telemetry')
+    .on<TelemetryRow>(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: TELEMETRY_TABLE },
+      (payload: RealtimePostgresInsertPayload<TelemetryRow>) => {
+        const row = payload.new ?? {};
         logRealtime('Received realtime telemetry event', {
-          events: event.events,
-          documentId: (event.payload as { $id?: string })?.$id
+          table: TELEMETRY_TABLE,
+          id: (row as { id?: number }).id
         });
-        notifyListeners(event as TelemetryEvent);
-        const payload = (event.payload ?? {}) as Record<string, unknown>;
-        const telemetry = mapTelemetry(payload);
+        const telemetry = mapTelemetry(row);
         if (telemetry) {
+          notifyListeners(telemetry);
           applyTelemetry(telemetry);
         } else {
-          warnRealtime('Telemetry payload missing robotId; ignoring event', payload);
+          warnRealtime('Telemetry payload missing robot_id; ignoring event', row);
         }
       }
-    );
-    stateStore.set('connected');
-    logRealtime('Realtime subscription established; stopping simulator fallback if active');
-    simulationForced = false;
-    stopSimulation();
-    updateSimulationModeSnapshot();
-  } catch (error) {
-    warnRealtime('Failed to subscribe to Appwrite Realtime; enabling simulator fallback', error);
-    stateStore.set('error');
-    startSimulation();
-  }
+    )
+    .subscribe((status: string, err?: { message?: string }) => {
+      if (status === 'SUBSCRIBED') {
+        stateStore.set('connected');
+        logRealtime('Realtime subscription established; stopping simulator fallback if active');
+        simulationForced = false;
+        stopSimulation();
+        updateSimulationModeSnapshot();
+      } else if (status === 'CHANNEL_ERROR') {
+        warnRealtime('Supabase realtime channel error; enabling simulator fallback', err);
+        clearRealtimeChannel();
+        stateStore.set('error');
+        startSimulation();
+      } else if (status === 'TIMED_OUT') {
+        warnRealtime('Supabase realtime subscription timed out; enabling simulator fallback');
+        clearRealtimeChannel();
+        stateStore.set('error');
+        startSimulation();
+      } else if (status === 'CLOSED') {
+        logRealtime('Supabase realtime channel closed by server');
+        clearRealtimeChannel();
+        stateStore.set('disconnected');
+      }
+    });
 }
 
 export function disconnectRealtime(): void {
-  if (unsubscribeRealtime) {
-    try {
-      unsubscribeRealtime();
-      logRealtime('Realtime subscription cancelled by client');
-    } catch (error) {
-      warnRealtime('Error unsubscribing from Appwrite Realtime', error);
-    }
-    unsubscribeRealtime = null;
+  if (telemetryChannel) {
+    clearRealtimeChannel();
+    logRealtime('Realtime subscription cancelled by client');
   }
   stateStore.set('disconnected');
   logRealtime('Realtime disconnected; starting simulator fallback');
@@ -301,21 +383,20 @@ export async function sendCommand(command: Command): Promise<void> {
     return;
   }
 
-  const documentId = command.id || ID.unique();
+  const documentId = command.id || crypto.randomUUID();
   const payload = {
-    commandId: command.id,
-    commandType: command.commandType,
-    status: command.status,
-    robotId: command.robotId,
+    id: documentId,
+    robot_id: command.robotId,
+    command_type: command.commandType,
     payload: command.payload,
-    issuedBy: command.issuedBy,
-    issuedAt: command.issuedAt
+    status: command.status,
+    issued_by: command.issuedBy,
+    issued_at: command.issuedAt
   };
 
-  try {
-    await appwriteDatabases.createDocument(APPWRITE_DATABASE_ID, COMMANDS_COLLECTION, documentId, payload);
-  } catch (error) {
-    warnRealtime('Failed to send command via Appwrite', error);
+  const { error } = await supabaseClient.from(COMMANDS_TABLE).insert(payload);
+  if (error) {
+    warnRealtime('Failed to send command via Supabase', error);
     throw error;
   }
 }
@@ -324,14 +405,9 @@ export function enableSimulationMode(): void {
   if (typeof window === 'undefined') return;
   logSimulator('Operator enabled manual simulation override');
   simulationForced = true;
-  if (unsubscribeRealtime) {
-    try {
-      unsubscribeRealtime();
-      logRealtime('Realtime subscription cancelled for simulator override');
-    } catch (error) {
-      warnRealtime('Error unsubscribing from Appwrite Realtime during simulator override', error);
-    }
-    unsubscribeRealtime = null;
+  if (telemetryChannel) {
+    clearRealtimeChannel();
+    logRealtime('Realtime subscription cancelled for simulator override');
   }
   stateStore.set('connected');
   startSimulation({ forced: true });
@@ -513,14 +589,5 @@ function stepSimulation(): void {
     telemetry
   });
 
-  const syntheticEvent = {
-    events: [`sim.${SIM_ROBOT_ID}.telemetry`],
-    channels: ['simulated'],
-    timestamp: Date.now(),
-    payload: telemetry,
-    event: `sim.${SIM_ROBOT_ID}.telemetry`,
-    userId: 'simulator'
-  } as unknown as TelemetryEvent;
-
-  notifyListeners(syntheticEvent);
+  notifyListeners(telemetry);
 }

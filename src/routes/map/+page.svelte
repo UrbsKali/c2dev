@@ -64,8 +64,14 @@
         </nav>
         <div class="text-right">
           {#if $currentUser}
-            <p class="text-sm font-semibold text-white">{$currentUser.name}</p>
-            <p class="uppercase tracking-wide">Role: {$userRole}</p>
+            <button
+              type="button"
+              class="block rounded border border-transparent px-3 py-2 text-right transition hover:border-slate-700 hover:bg-slate-900 focus:outline-none focus-visible:border-accent"
+              on:click={() => goto('/user')}
+            >
+              <p class="text-sm font-semibold text-white">{$currentUser.name}</p>
+              <p class="uppercase tracking-wide">Role: {$userRole}</p>
+            </button>
           {:else}
             <p class="text-sm text-slate-500">Not authenticated</p>
           {/if}

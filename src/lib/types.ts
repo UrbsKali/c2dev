@@ -29,9 +29,11 @@ export interface Mission {
   briefing: string;
   assignedOperators: string[];
   assignedRobots: string[];
+  assignments: Array<{ operatorId: string | null; robotId: string | null }>;
   status: 'draft' | 'active' | 'completed' | 'aborted';
   ownerId?: string;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Command {
