@@ -1,10 +1,13 @@
 <script lang="ts">
   import CommandPanel from '$components/CommandPanel.svelte';
+  import ManualControlPanel from '$components/ManualControlPanel.svelte';
+  import EventFeedPanel from '$components/EventFeedPanel.svelte';
   import RobotPanel from '$components/RobotPanel.svelte';
   import CameraView from '$components/CameraView.svelte';
   import MissionBrief from '$components/MissionBrief.svelte';
   import LoginPanel from '$components/LoginPanel.svelte';
   import { currentUser, userRole, isAuthenticated } from '$stores/user';
+  import { unacknowledgedCount } from '$stores/events';
   import { controllableRobots } from '$stores/robots';
   import { assignedRobotIds } from '$stores/missions';
   import { drawnWaypoints } from '$stores/mapInteractions';
@@ -40,13 +43,18 @@
         <nav class="flex items-center gap-1 rounded-full border border-slate-800 bg-slate-900/60 px-2 py-1">
           {#each navLinks as link}
             <a
-              class="rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition hover:bg-slate-800"
+              class="relative rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition hover:bg-slate-800"
               class:bg-accent={currentPath.startsWith(link.href)}
               class:text-slate-950={currentPath.startsWith(link.href)}
               class:text-slate-300={!currentPath.startsWith(link.href)}
               href={link.href}
             >
               {link.label}
+              {#if link.href === '/control' && $unacknowledgedCount > 0}
+                <span class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white animate-pulse">
+                  {$unacknowledgedCount}
+                </span>
+              {/if}
             </a>
           {/each}
         </nav>
@@ -69,45 +77,54 @@
     </header>
 
     <main class="flex flex-1 overflow-hidden">
-      <section class="flex w-full flex-col gap-6 overflow-y-auto bg-slate-950 px-6 py-6 lg:grid lg:grid-cols-[minmax(340px,360px)_minmax(320px,1fr)_minmax(360px,380px)] lg:gap-6">
-        <div class="flex flex-col gap-4">
-          <CommandPanel lastDrawnWaypoints={$drawnWaypoints} />
-          <div class="rounded border border-slate-700 bg-slate-900/60 p-4 text-xs text-slate-300">
-            <p class="uppercase tracking-wide text-slate-400">Latest Waypoints</p>
-            {#if $drawnWaypoints.length}
-              <ul class="mt-2 space-y-1">
-                {#each $drawnWaypoints as [lat, lon], index}
-                  <li>
-                    <span class="text-slate-500">#{index + 1}</span>
-                    <span class="ml-2">{lat.toFixed(5)}, {lon.toFixed(5)}</span>
-                  </li>
-                {/each}
-              </ul>
-            {:else}
-              <p class="mt-2 text-slate-500">No waypoints recorded yet. Plot a route on the map.</p>
+      <section class="flex w-full flex-col gap-6 overflow-y-auto bg-slate-950 px-6 py-6">
+        <!-- Top 3-column operational deck -->
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(320px,360px)_minmax(340px,1fr)_minmax(320px,360px)]">
+          <div class="flex flex-col gap-4">
+            <CommandPanel lastDrawnWaypoints={$drawnWaypoints} />
+            <div class="rounded border border-slate-700 bg-slate-900/60 p-4 text-xs text-slate-300">
+              <p class="uppercase tracking-wide text-slate-400">Latest Waypoints</p>
+              {#if $drawnWaypoints.length}
+                <ul class="mt-2 space-y-1">
+                  {#each $drawnWaypoints as [lat, lon], index}
+                    <li>
+                      <span class="text-slate-500">#{index + 1}</span>
+                      <span class="ml-2">{lat.toFixed(5)}, {lon.toFixed(5)}</span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="mt-2 text-slate-500">No waypoints recorded yet. Plot a route on the map.</p>
+              {/if}
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-4">
+            <RobotPanel />
+            <CameraView robotId={$currentUser?.assignedRobots?.[0] ?? null} />
+          </div>
+
+          <div class="flex flex-col gap-4">
+            <EventFeedPanel />
+            <MissionBrief />
+
+            {#if $userRole !== 'operator'}
+              <div class="rounded border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-200">
+                <h3 class="text-sm font-semibold text-white">Mission Oversight</h3>
+                <p class="text-xs text-slate-400">Robots assigned to mission: {$assignedRobotIds.length}</p>
+                <ul class="mt-2 space-y-1 text-xs text-slate-300">
+                  {#each $assignedRobotIds as robotId}
+                    <li>{robotId}</li>
+                  {/each}
+                </ul>
+              </div>
             {/if}
           </div>
         </div>
 
-        <div class="flex flex-col gap-4">
-          <RobotPanel />
-          <CameraView robotId={$currentUser?.assignedRobots?.[0] ?? null} />
-        </div>
-
-        <div class="flex flex-col gap-4">
-          <MissionBrief />
-
-          {#if $userRole !== 'operator'}
-            <div class="rounded border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-200">
-              <h3 class="text-sm font-semibold text-white">Mission Oversight</h3>
-              <p class="text-xs text-slate-400">Robots assigned to mission: {$assignedRobotIds.length}</p>
-              <ul class="mt-2 space-y-1 text-xs text-slate-300">
-                {#each $assignedRobotIds as robotId}
-                  <li>{robotId}</li>
-                {/each}
-              </ul>
-            </div>
-          {/if}
+        <!-- Dedicated bottom full-width section: Manual Robot Teleop Deck -->
+        <div class="mt-2">
+          <ManualControlPanel />
         </div>
       </section>
     </main>

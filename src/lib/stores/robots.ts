@@ -70,10 +70,15 @@ export function applyTelemetry(message: TelemetryMessage): void {
       heading: message.heading ?? existing?.heading,
       speed: message.speed ?? existing?.speed,
       status: (message.status as string | undefined) ?? existing?.status,
+      battery: message.battery ?? existing?.battery,
+      controlProfileId: message.controlProfileId ?? existing?.controlProfileId,
       lastSeen: message.lastSeen ?? existing?.lastSeen,
       serverReceived: message.serverReceived ?? existing?.serverReceived,
       extra: {
         ...(existing?.extra ?? {}),
+        ...(message.controlDescriptor !== undefined
+          ? { controlDescriptor: message.controlDescriptor }
+          : {}),
         seq: message.seq
       }
     };

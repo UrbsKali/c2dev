@@ -55,6 +55,9 @@ type TelemetryRow = {
   timestamp?: string | null;
   server_received?: string | null;
   type?: string | null;
+  battery?: number | null;
+  control_profile?: string | null;
+  control_descriptor?: unknown;
 };
 
 type TelemetryListener = (message: TelemetryMessage) => void;
@@ -298,6 +301,11 @@ function mapTelemetry(row: TelemetryRow): TelemetryMessage | null {
   if (typeof row.type === 'string') {
     telemetry.type = row.type as TelemetryMessage['type'];
   }
+  if (typeof row.battery === 'number') telemetry.battery = row.battery;
+  if (typeof row.control_profile === 'string') telemetry.controlProfileId = row.control_profile;
+  if (row.control_descriptor && typeof row.control_descriptor === 'object') {
+    telemetry.controlDescriptor = row.control_descriptor;
+  }
 
   return telemetry;
 }
@@ -372,32 +380,47 @@ export function disconnectRealtime(): void {
   startSimulation({ forced: simulationForced });
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: string | undefined | null): value is string => !!value && UUID_RE.test(value);
+
 export async function sendCommand(command: Command): Promise<void> {
-  if (simulationActive && command.robotId === SIM_ROBOT_ID) {
-    logSimulator('Routing command to simulator', {
-      commandType: command.commandType,
-      commandId: command.id
-    });
-    handleSimulationCommand(command);
-    broadcastSync('command', command);
-    return;
+  const documentId = command.id || crypto.randomUUID();
+
+  // `commands.robot_id` and `commands.issued_by` are uuid columns (robot_id is a foreign key to
+  // `robots`). Non-uuid ids (simulated robot, anonymous test operator) stay local.
+  if (!isUuid(command.robotId)) {
+    debugSimulator('Command not persisted (robot id is not a uuid):', command.robotId);
+  } else {
+    const payload = {
+      id: documentId,
+      robot_id: command.robotId,
+      command_type: command.commandType,
+      payload: command.payload,
+      status: command.status,
+      issued_by: isUuid(command.issuedBy) ? command.issuedBy : null,
+      issued_at: command.issuedAt
+    };
+
+    try {
+      const { error } = await supabaseClient.from(COMMANDS_TABLE).insert(payload);
+      if (error) {
+        warnRealtime('Supabase command insert failed', error.message);
+      } else {
+        logRealtime('Command persisted to Supabase database', {
+          id: documentId,
+          robotId: command.robotId,
+          type: command.commandType
+        });
+      }
+    } catch (err) {
+      warnRealtime('Network error inserting command into Supabase', err);
+    }
   }
 
-  const documentId = command.id || crypto.randomUUID();
-  const payload = {
-    id: documentId,
-    robot_id: command.robotId,
-    command_type: command.commandType,
-    payload: command.payload,
-    status: command.status,
-    issued_by: command.issuedBy,
-    issued_at: command.issuedAt
-  };
-
-  const { error } = await supabaseClient.from(COMMANDS_TABLE).insert(payload);
-  if (error) {
-    warnRealtime('Failed to send command via Supabase', error);
-    throw error;
+  // If local simulator is active, update simulated robot in real-time
+  if (simulationActive) {
+    handleSimulationCommand(command);
+    broadcastSync('command', command);
   }
 }
 
@@ -508,6 +531,63 @@ function handleSimulationCommand(command: Command): void {
   } else if (command.commandType === 'request_camera_stream') {
     simulationStatus = 'Streaming camera feed';
     logSimulator('Simulator received camera stream request');
+  } else if (command.commandType === 'teleop' || command.commandType === 'manual_drive') {
+    const payload = command.payload as {
+      linear?: { x?: number };
+      angular?: { z?: number };
+      speedFactor?: number;
+    } | undefined;
+
+    const lin = payload?.linear?.x ?? 0;
+    const ang = payload?.angular?.z ?? 0;
+
+    if (Math.abs(lin) < 0.01 && Math.abs(ang) < 0.01) {
+      simulationStatus = 'Manual control idle';
+    } else {
+      simulationStatus = `Manual teleop: V=${lin.toFixed(2)}, W=${ang.toFixed(2)}`;
+      // Approximate heading turn
+      const currentHeading = 0;
+      const newHeading = ((ang * 25) + 360) % 360;
+
+      // Displacement step
+      const step = lin * 0.00015;
+      simulationCurrent = {
+        lat: simulationCurrent.lat + step,
+        lon: simulationCurrent.lon + (ang * 0.00015),
+        alt: simulationCurrent.alt
+      };
+
+      const timestamp = new Date().toISOString();
+      const speed = Math.abs(lin) * 3.5;
+
+      upsertRobot({
+        id: SIM_ROBOT_ID,
+        controllable: true,
+        position: { ...simulationCurrent },
+        heading: newHeading,
+        speed,
+        status: simulationStatus,
+        lastSeen: timestamp,
+        type: 'UAV',
+        extra: { simulated: true, teleopActive: true }
+      });
+
+      const telemetry: TelemetryMessage = {
+        msgType: 'telemetry',
+        robotId: SIM_ROBOT_ID,
+        seq: simulationSeq++,
+        position: { ...simulationCurrent },
+        heading: newHeading,
+        speed,
+        status: simulationStatus,
+        type: 'UAV',
+        lastSeen: timestamp,
+        serverReceived: timestamp
+      };
+
+      applyTelemetry(telemetry);
+      notifyListeners(telemetry);
+    }
   }
 }
 
