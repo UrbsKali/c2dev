@@ -18,6 +18,10 @@ export interface Robot {
   lastSeen?: string;
   serverReceived?: string;
   controllable: boolean;
+  /** Battery level, percent (0-100). */
+  battery?: number;
+  /** Id of the control profile the robot announces (see teleop/registry). */
+  controlProfileId?: string;
   owner?: string;
   icon?: string;
   extra?: Record<string, unknown>;
@@ -55,6 +59,9 @@ export interface TelemetryMessage {
   speed?: number;
   type?: APP6ERole;
   status?: string;
+  battery?: number;
+  controlProfileId?: string;
+  controlDescriptor?: unknown;
   lastSeen?: string;
   serverReceived?: string;
   [key: string]: unknown;
@@ -68,4 +75,25 @@ export interface CommandMessage {
   payload: unknown;
   issuedBy: string;
   issuedAt: string;
+}
+
+export type EventSeverity = 'info' | 'warning' | 'critical' | 'error';
+
+export interface RobotEvent {
+  id: string;
+  robotId?: string;
+  severity: EventSeverity;
+  title: string;
+  message?: string;
+  acknowledged: boolean;
+  acknowledgedBy?: string;
+  createdAt: string;
+}
+
+export interface TeleopPayload {
+  linear: { x: number; y: number; z: number };
+  angular: { x: number; y: number; z: number };
+  source: 'keyboard' | 'gamepad' | 'ui' | 'custom';
+  speedFactor?: number;
+  raw?: Record<string, unknown>;
 }

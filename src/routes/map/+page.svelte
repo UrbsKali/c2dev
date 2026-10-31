@@ -3,6 +3,7 @@
   import TimelineScrubber from '$components/TimelineScrubber.svelte';
   import LoginPanel from '$components/LoginPanel.svelte';
   import { currentUser, userRole, isAuthenticated } from '$stores/user';
+  import { unacknowledgedCount } from '$stores/events';
   import { robots, selectedRobotId } from '$stores/robots';
   import { layoutState } from '$stores/layout';
   import { recordWaypoints, sharedSelectedRobotId } from '$stores/mapInteractions';
@@ -52,13 +53,18 @@
         <nav class="flex items-center gap-1 rounded-full border border-slate-800 bg-slate-900/60 px-2 py-1">
           {#each navLinks as link}
             <a
-              class="rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition hover:bg-slate-800"
+              class="relative rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition hover:bg-slate-800"
               class:bg-accent={currentPath.startsWith(link.href)}
               class:text-slate-950={currentPath.startsWith(link.href)}
               class:text-slate-300={!currentPath.startsWith(link.href)}
               href={link.href}
             >
               {link.label}
+              {#if link.href === '/control' && $unacknowledgedCount > 0}
+                <span class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white animate-pulse">
+                  {$unacknowledgedCount}
+                </span>
+              {/if}
             </a>
           {/each}
         </nav>

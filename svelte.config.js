@@ -9,7 +9,10 @@ const config = {
       $components: 'src/lib/components',
       $services: 'src/lib/services',
       $stores: 'src/lib/stores',
-      $types: 'src/lib/types'
+      $types: 'src/lib/types',
+      $config: 'src/lib/config',
+      $teleop: 'src/lib/teleop',
+      $monitoring: 'src/lib/monitoring'
     }
   }
 };

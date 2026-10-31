@@ -27,6 +27,7 @@ export const MISSION_ASSIGNMENTS_TABLE = 'mission_assignments';
 export const ROBOTS_TABLE = 'robots';
 export const TELEMETRY_TABLE = 'telemetry_points';
 export const COMMANDS_TABLE = 'commands';
+export const EVENTS_TABLE = 'events';
 
 const MISSION_SELECT = `
   id,
